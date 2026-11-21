@@ -2,55 +2,62 @@ import { useState, useEffect, useRef } from 'react';
 import { fetchLyricsExact } from './engine/lyrics/lrclib';
 import { parseLRC, findActiveLineIndex, type LyricLine } from './engine/lyrics/lrcParser';
 
-const THEMES = {
-  dark: {
-    name: 'Cinematic Dark',
-    background: 'linear-gradient(135deg, #1a1a2e, #000)',
-    activeColor: '#ffffff',
-    inactiveColor: '#555555',
-    glow: '0 0 20px rgba(255,255,255,0.5)',
-  },
-  dreamy: {
-    name: 'Dreamy Gradient',
-    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-    activeColor: '#ffffff',
-    inactiveColor: 'rgba(255,255,255,0.4)',
-    glow: '0 0 30px rgba(255,255,255,0.8)',
-  },
-  sunset: {
-    name: 'Sunset Glow',
-    background: 'linear-gradient(to top, #ff0844 0%, #ffb199 100%)',
-    activeColor: '#ffffff',
-    inactiveColor: 'rgba(0,0,0,0.4)',
-    glow: '0 0 20px rgba(0,0,0,0.3)',
-  }
-};
-
 export default function App() {
   const [lines, setLines] = useState<LyricLine[]>([]);
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
+  const [durationMs, setDurationMs] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   
   const [songTitle, setSongTitle] = useState('Kesariya');
   const [artistName, setArtistName] = useState('Arijit Singh');
-  const [duration, setDuration] = useState(268);
   
-  const [themeKey, setThemeKey] = useState<keyof typeof THEMES>('dark');
-  const theme = THEMES[themeKey];
+  const [bgColor, setBgColor] = useState('#000000');
+  const [bgImage, setBgImage] = useState<string | null>(null);
+  const [albumArt, setAlbumArt] = useState<string | null>(null);
+
+  const [fontFamily, setFontFamily] = useState('Inter');
+  const [fontSize, setFontSize] = useState(32);
+  const [animationStyle, setAnimationStyle] = useState('karaoke');
+  
+  const [filmGrain, setFilmGrain] = useState(false);
+  const [vignette, setVignette] = useState(true);
+  const [backgroundBlur, setBackgroundBlur] = useState(false);
 
   const activeIndex = findActiveLineIndex(lines, currentTimeMs);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const togglePlay = () => {
+    if (!audioRef.current) return;
+    if (isPlaying) audioRef.current.pause();
+    else audioRef.current.play();
+  };
+
+  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!audioRef.current || durationMs === 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const percent = clickX / rect.width;
+    audioRef.current.currentTime = (percent * durationMs) / 1000;
+  };
+
+  const formatTime = (ms: number) => {
+    if (!ms || isNaN(ms)) return "0:00";
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  };
 
   const fetchLyricsForSong = async (exactDuration: number) => {
     setLoading(true);
     setLines([]);
     try {
-      // Now uses the exactDuration we passed in
       const lyricsData = await fetchLyricsExact(songTitle, artistName, exactDuration);
       if (lyricsData && lyricsData.syncedLyrics) {
         setLines(parseLRC(lyricsData.syncedLyrics));
       } else {
-        alert("No synchronized lyrics found for this song.");
+        alert("No synchronized lyrics found.");
       }
     } catch (err) {
       console.error(err);
@@ -58,151 +65,258 @@ export default function App() {
     setLoading(false);
   };
 
-  // UPDATED: Now reads the file length automatically
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !audioRef.current) return;
     
     const fileUrl = URL.createObjectURL(file);
     audioRef.current.src = fileUrl;
 
-    // Create a temporary audio object just to read the duration
     const tempAudio = new Audio(fileUrl);
     tempAudio.addEventListener('loadedmetadata', () => {
       const exactSeconds = Math.round(tempAudio.duration);
-      
-      // 1. Update the UI box
-      setDuration(exactSeconds);
-      
-      // 2. Fetch lyrics using the exact math from the file
+      setDurationMs(tempAudio.duration * 1000);
       fetchLyricsForSong(exactSeconds);
     });
+
+    const jsmediatags = (window as any).jsmediatags;
+    if (jsmediatags) {
+      jsmediatags.read(file, {
+        onSuccess: (tag: any) => {
+          const image = tag.tags.picture;
+          if (image) {
+            const base64String = btoa(
+              new Uint8Array(image.data).reduce((data, byte) => data + String.fromCharCode(byte), '')
+            );
+            setAlbumArt(`data:${image.format};base64,${base64String}`);
+          }
+        },
+        onError: () => console.log('No album art found'),
+      });
+    }
+  };
+
+  const handleBgUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) setBgImage(URL.createObjectURL(file));
   };
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
+    
     const updateTime = () => setCurrentTimeMs(audio.currentTime * 1000);
+    const onPlay = () => setIsPlaying(true);
+    const onPause = () => setIsPlaying(false);
+    const onEnded = () => setIsPlaying(false);
+
     audio.addEventListener('timeupdate', updateTime);
-    return () => audio.removeEventListener('timeupdate', updateTime);
+    audio.addEventListener('play', onPlay);
+    audio.addEventListener('pause', onPause);
+    audio.addEventListener('ended', onEnded);
+
+    return () => {
+      audio.removeEventListener('timeupdate', updateTime);
+      audio.removeEventListener('play', onPlay);
+      audio.removeEventListener('pause', onPause);
+      audio.removeEventListener('ended', onEnded);
+    };
   }, []);
 
   useEffect(() => {
     if (activeIndex !== -1) {
       const activeEl = document.getElementById(`line-${activeIndex}`);
-      if (activeEl) {
-        activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
+      if (activeEl) activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }, [activeIndex]);
 
+  const renderKaraokeLine = (line: LyricLine, isActive: boolean) => {
+    if (!isActive) return line.text;
+
+    const totalDuration = line.endMs - line.startMs;
+    const elapsed = currentTimeMs - line.startMs;
+    const progress = Math.max(0, Math.min(1, elapsed / totalDuration));
+    
+    // Move the background mask to create the wipe effect
+    const bgPosition = `${100 - (progress * 100)}%`;
+
+    return (
+      <span className="smooth-karaoke-container">
+        <span className="smooth-karaoke-base">{line.text}</span>
+        <span 
+          className="smooth-karaoke-fill"
+          style={{ backgroundPosition: bgPosition }}
+        >
+          {line.text}
+        </span>
+      </span>
+    );
+  };
+
   return (
-    <div style={{ display: 'flex', height: '100vh', background: '#111', color: '#fff', fontFamily: 'sans-serif', overflow: 'hidden' }}>
-      
-      {/* LEFT SIDE: Controls */}
-      <div style={{ width: '340px', padding: '20px', borderRight: '1px solid #333', display: 'flex', flexDirection: 'column', gap: '15px', overflowY: 'auto' }}>
-        <h1 style={{ margin: 0 }}>LyricFlow Studio</h1>
-        
+    <div className="app">
+      {/* SIDEBAR */}
+      <div className="sidebar">
         <div>
-          <label style={{ fontSize: '12px', color: '#888' }}>Song Title</label>
-          <input value={songTitle} onChange={(e) => setSongTitle(e.target.value)} style={{ width: '100%', padding: '8px', background: '#222', color: '#fff', border: '1px solid #444', borderRadius: '4px', marginTop: '4px' }} />
-        </div>
-
-        <div>
-          <label style={{ fontSize: '12px', color: '#888' }}>Artist Name</label>
-          <input value={artistName} onChange={(e) => setArtistName(e.target.value)} style={{ width: '100%', padding: '8px', background: '#222', color: '#fff', border: '1px solid #444', borderRadius: '4px', marginTop: '4px' }} />
-        </div>
-
-        <div>
-          <label style={{ fontSize: '12px', color: '#888' }}>Duration (auto-detected)</label>
-          <input type="number" value={duration} readOnly style={{ width: '100%', padding: '8px', background: '#111', color: '#888', border: '1px solid #333', borderRadius: '4px', marginTop: '4px', cursor: 'not-allowed' }} />
-        </div>
-
-        <div style={{ marginTop: '10px' }}>
-          <label style={{ fontSize: '12px', color: '#888', display: 'block', marginBottom: '8px' }}>Upload MP3</label>
-          <input type="file" accept="audio/*" onChange={handleFileUpload} style={{ color: '#fff' }} />
+          <h1 className="logo">Lyric<span>Flow</span></h1>
+          <p className="subtitle">Cinematic Music & Lyrics Studio</p>
         </div>
         
-        {loading && <p style={{ color: '#aaa' }}>Reading file & fetching lyrics...</p>}
+        <div className="control-group">
+          <label>Song Title</label>
+          <input value={songTitle} onChange={(e) => setSongTitle(e.target.value)} />
+        </div>
 
-        <div style={{ marginTop: '20px' }}>
-          <label style={{ fontSize: '12px', color: '#888', display: 'block', marginBottom: '8px' }}>Visual Theme</label>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {(Object.keys(THEMES) as Array<keyof typeof THEMES>).map((key) => (
-              <button 
-                key={key} 
-                onClick={() => setThemeKey(key)}
-                style={{ 
-                  padding: '10px', 
-                  background: themeKey === key ? '#fff' : '#222', 
-                  color: themeKey === key ? '#000' : '#fff',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontWeight: 'bold'
-                }}
-              >
-                {THEMES[key].name}
-              </button>
-            ))}
+        <div className="control-group">
+          <label>Artist Name</label>
+          <input value={artistName} onChange={(e) => setArtistName(e.target.value)} />
+        </div>
+
+        <div className="panel">
+          <div className="section-title">Typography</div>
+          <div className="control-group">
+            <label>Font Family</label>
+            <select 
+              value={fontFamily} 
+              onChange={(e) => setFontFamily(e.target.value)} 
+              style={{ padding: '10px', background: '#1c1b26', color: 'white', border: '1px solid #302e3c', borderRadius: '8px', outline: 'none' }}
+            >
+              <option value="Inter">Inter</option>
+              <option value="Montserrat">Montserrat</option>
+              <option value="Playfair Display">Playfair Display</option>
+              <option value="Bebas Neue">Bebas Neue</option>
+              <option value="Cormorant Garamond">Cormorant Garamond</option>
+            </select>
+          </div>
+          <div className="control-group">
+            <label>Font Size: {fontSize}px</label>
+            <input type="range" min="18" max="55" value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} />
           </div>
         </div>
 
-        <audio ref={audioRef} controls style={{ width: '100%', marginTop: 'auto' }} />
+        <div className="panel">
+          <div className="section-title">Lyric Animation</div>
+          <select 
+            value={animationStyle} 
+            onChange={(e) => setAnimationStyle(e.target.value)} 
+            style={{ padding: '10px', background: '#1c1b26', color: 'white', border: '1px solid #302e3c', borderRadius: '8px', outline: 'none' }}
+          >
+            <option value="karaoke">Karaoke Highlight</option>
+            <option value="fade">Fade In</option>
+            <option value="slide">Slide Up</option>
+            <option value="static">Static Text</option>
+          </select>
+        </div>
+
+        <div className="panel">
+          <div className="section-title">Cinematic Effects</div>
+          <label style={{ display: 'flex', gap: '10px', alignItems: 'center', fontSize: '13px', cursor: 'pointer' }}>
+            <input type="checkbox" checked={filmGrain} onChange={(e) => setFilmGrain(e.target.checked)} /> Film Grain
+          </label>
+          <label style={{ display: 'flex', gap: '10px', alignItems: 'center', fontSize: '13px', cursor: 'pointer' }}>
+            <input type="checkbox" checked={vignette} onChange={(e) => setVignette(e.target.checked)} /> Vignette
+          </label>
+          <label style={{ display: 'flex', gap: '10px', alignItems: 'center', fontSize: '13px', cursor: 'pointer' }}>
+            <input type="checkbox" checked={backgroundBlur} onChange={(e) => setBackgroundBlur(e.target.checked)} /> Background Blur
+          </label>
+        </div>
+
+        <div className="panel">
+          <div className="section-title">Background</div>
+          <input type="color" value={bgColor} onChange={(e) => { setBgColor(e.target.value); setBgImage(null); }} />
+          <input type="file" accept="image/*" onChange={handleBgUpload} />
+          {bgImage && <button className="remove-button" onClick={() => setBgImage(null)}>Remove Image</button>}
+        </div>
+
+        <div className="control-group">
+          <label className="section-title">Audio File</label>
+          <div className="upload-box" style={{ position: 'relative' }}>
+            <input type="file" accept="audio/*" onChange={handleAudioUpload} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
+            <span>Click to Upload MP3</span>
+          </div>
+        </div>
+        
+        {loading && <p style={{ color: '#a78bfa', fontSize: '13px' }}>Fetching lyrics...</p>}
+        
+        {/* HIDDEN AUDIO ELEMENT */}
+        <audio ref={audioRef} style={{ display: 'none' }} />
       </div>
 
-      {/* RIGHT SIDE: The 9:16 Cinematic Canvas */}
-      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', background: '#000', padding: '20px' }}>
-        <div style={{
-          height: '100%',
-          aspectRatio: '9 / 16',
-          background: theme.background,
-          borderRadius: '0px',
-          boxShadow: 'none',
-          overflow: 'hidden',
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'center',
-          transition: 'background 1s ease'
+      {/* WORKSPACE */}
+      <div className="workspace">
+        <div className="workspace-header">
+          <h2>9:16 Canvas</h2>
+          <span>LIVE PREVIEW</span>
+        </div>
+
+        <div className="preview" style={{
+          background: bgImage ? `url(${bgImage}) center/cover` : bgColor,
         }}>
-          <div style={{ 
-            height: '100%', 
-            overflow: 'hidden', 
-            padding: '40px 20px', 
-            display: 'flex', 
-            flexDirection: 'column',
-            gap: '24px',
-            maskImage: 'linear-gradient(to bottom, transparent, black 15%, black 85%, transparent)',
-            WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 15%, black 85%, transparent)'
-          }}>
-            {lines.length === 0 && !loading && <p style={{ color: theme.inactiveColor, textAlign: 'center', fontSize: '24px', fontWeight: 'bold' }}>Upload an MP3 to see lyrics</p>}
+          
+          <div 
+            className={backgroundBlur ? "preview-background-blur" : ""} 
+            style={{ 
+              position: 'absolute', inset: 0, 
+              background: albumArt ? `url(${albumArt}) center/cover` : 'transparent',
+              opacity: albumArt ? 0.4 : 0,
+              zIndex: 0 
+            }} 
+          />
+          
+          <div className="preview-overlay" />
+          {vignette && <div className="vignette" />}
+
+          <div className="lyrics-container">
+            {lines.length === 0 && !loading && <div className="empty-state">Upload an MP3 to start</div>}
             
             {lines.map((line, i) => {
               const isActive = i === activeIndex;
-              const isPrevious = i < activeIndex;
               
+              let animClass = '';
+              if (isActive) {
+                if (animationStyle === 'fade') animClass = 'lyric-fade';
+                if (animationStyle === 'slide') animClass = 'lyric-slide';
+              }
+
               return (
                 <p 
                   key={i} 
                   id={`line-${i}`}
+                  className={`lyric-line ${isActive ? 'active' : 'inactive'} ${animClass}`}
                   style={{
-                    margin: 0,
-                    fontSize: isActive ? '32px' : '20px',
-                    fontWeight: isActive ? '900' : '500',
-                    color: isActive ? theme.activeColor : theme.inactiveColor,
-                    textAlign: 'center',
-                    textShadow: isActive ? theme.glow : 'none',
-                    transition: 'all 0.6s cubic-bezier(0.16, 1, 0.3, 1)',
-                    transform: isActive ? 'scale(1.05)' : 'scale(0.95)',
-                    opacity: isActive ? 1 : (isPrevious ? 0.2 : 0.4),
+                    fontFamily,
+                    fontSize: isActive ? `${fontSize}px` : `${fontSize * 0.7}px`,
                   }}
                 >
-                  {line.text}
+                  {animationStyle === 'karaoke' ? renderKaraokeLine(line, isActive) : line.text}
                 </p>
               );
             })}
           </div>
+          
+          {filmGrain && <div className="film-grain" />}
         </div>
+
+        {/* CUSTOM PLAYER CONTROLS */}
+        <div className="custom-player">
+          <button className="play-btn" onClick={togglePlay}>
+            {isPlaying ? '⏸' : '▶'}
+          </button>
+          
+          <div className="progress-container">
+            <span className="time-text">{formatTime(currentTimeMs)}</span>
+            
+            <div className="progress-bar" onClick={handleSeek}>
+              <div 
+                className="progress-fill" 
+                style={{ width: `${durationMs > 0 ? (currentTimeMs / durationMs) * 100 : 0}%` }} 
+              />
+            </div>
+            
+            <span className="time-text">{formatTime(durationMs)}</span>
+          </div>
+        </div>
+        
       </div>
     </div>
   );
